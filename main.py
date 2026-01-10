@@ -8,32 +8,29 @@ import seaborn as sns
 from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import Button, Slider
 
-
-
 os.makedirs('cache', exist_ok=True)
 f1.Cache.enable_cache('cache')
 driver_teams = {}
 
-
-
 TEAM_COLORS = {
-    'Ferrari': '#FF2800',           # Red
-    'Red Bull Racing': '#3671C6',  # Blue
-    'Mercedes': '#6CD3BF',          # Silver/Turquoise
-    'McLaren': '#FF8000',           # Papaya Orange
-    'Alpine': '#FF87BC',            # Pink
-    'Aston Martin': '#00665E',      # British Racing Green
-    'Williams': '#005AFF',          # Blue
-    'Cadillac': '#000000',          # Black
-    'Haas F1 Team':'#9C9FA2',      # White/Red/Black (using white as base)
-    'AlphaTauri': '#2B4562',        # Navy Blue
-    'Kick Sauber': '#52C41A',            # Green
-    'Racing Bulls': '#FDD900',      # Yellow
-    'alfa romeo':'#972738'          #Red
-                  
+    'Ferrari': '#FF2800',
+    'Red Bull Racing': '#3671C6',
+    'Mercedes': '#6CD3BF',
+    'McLaren': '#FF8000',
+    'Alpine': '#FF87BC',
+    'Aston Martin': '#00665E',
+    'Williams': '#005AFF',
+    'Cadillac': '#000000',
+    'Haas F1 Team':'#9C9FA2',
+    'AlphaTauri': '#2B4562',
+    'Kick Sauber': '#52C41A',
+    'Racing Bulls': '#FDD900',
+    'alfa romeo':'#972738'
 }
 LINE_STYLES = ['-', '--']
 SECTOR_MARKERS = ['o', 's', '^']
+FPS = 30 
+SHOW_TRAILS = False
 
 mode = input("Choose the mode: 'LAP' for lap times or 'SECTOR' for sector time: ").upper().strip()
 if mode not in {"LAP", "SECTOR"}:
@@ -43,7 +40,6 @@ if mode not in {"LAP", "SECTOR"}:
 year = input("Enter the year: ")
 round_number = input("Enter the Round number (1-24): ")
 type_of_session = input("Enter the type of session (R, Q, P): ").upper()
-
 
 if not year.isdigit():
     print("Invalid year")
@@ -75,37 +71,19 @@ else:
         print("Available drivers:", ", ".join(sorted(available)))
         exit()
 
-
-
-
-REPLAY_MODE = input(
-    "Replay mode: 'FASTEST' or 'RACE': "
-).upper().strip()
+REPLAY_MODE = input("Replay mode: 'FASTEST' or 'RACE': ").upper().strip()
 
 if REPLAY_MODE not in {"FASTEST", "RACE"}:
     print("Invalid replay mode")
     exit()
 
-
-# Track Animation
-
-fig1, ax1 = plt.subplots(figsize=(8, 8))
-ax1.set_title("F1 Lap Replay")
-ax1.set_aspect('equal')
-plt.subplots_adjust(bottom=0.25, right=0.78)
-
-
 # Collect telemetry for all drivers
 telemetry_data = {}
-points = {}
-lines = {}
-SHOW_TRAILS = False  #  toggle trails ON/OFF
-FPS = 30
-
 for drv in drivers:
     drv_laps = laps.pick_driver(drv)
     tel_list = []
     offset = 0.0
+
     if REPLAY_MODE == "FASTEST":
         lap = drv_laps.pick_fastest()
         if lap is None:
@@ -118,25 +96,18 @@ for drv in drivers:
             try:
                 t = lap.get_telemetry().dropna(subset=["X", "Y", "Time"])
             except:
-                    continue  # skip if telemetry is missing entirely
-    
+                continue
             if t.empty:
-                    continue  # skip if no telemetry at all
-    
-    t["t"] = t["Time"].dt.total_seconds() + offset
-    offset = t["t"].iloc[-1]
-    tel_list.append(t)
+                continue
+            t["t"] = t["Time"].dt.total_seconds() + offset
+            offset = t["t"].iloc[-1]
+            tel_list.append(t)
 
     if not tel_list:
-        print(f"Skipping {drv} (no telemetry)")
         continue
-
     tel = pd.concat(tel_list, ignore_index=True)
-
-    # Normalize time
     tel["t"] -= tel["t"].iloc[0]
-
-    # Distance
+    tel["race_time"] = tel["t"]
     dx = tel["X"].diff()
     dy = tel["Y"].diff()
     tel["dist"] = (dx**2 + dy**2).pow(0.5).fillna(0).cumsum()
@@ -147,43 +118,43 @@ for drv in drivers:
         if tel["t"].iloc[i] - tel["t"].iloc[i - 1] > 20:
             lap_starts.append(tel["t"].iloc[i])
     tel.attrs["lap_starts"] = lap_starts
-
     telemetry_data[drv] = tel
 
+fig1, ax1 = plt.subplots(figsize=(10, 8))
+ax1.set_title("F1 Lap Replay", fontsize=16, fontweight='bold', pad=20)
+ax1.set_aspect('equal')
+plt.subplots_adjust(bottom=0.25, right=0.75, left=0.1)
 
-
-all_tel = pd.concat(telemetry_data.values())
-# CLEAN TRACK DRAWING
+# Plot track reference
 ref_driver = drivers[0]
 ref_lap = laps.pick_driver(ref_driver).pick_fastest()
 track_tel = ref_lap.get_telemetry().dropna(subset=["X", "Y"])
-ax1.plot(
-    track_tel["X"],
-    track_tel["Y"],
-    color="lightgray",
-    lw=2,
-    alpha=0.7,
-    zorder=1
-)
+ax1.plot(track_tel["X"], track_tel["Y"], color="lightgray", lw=2, alpha=0.7, zorder=1)
 
-
+# Driver points and lines
+points, lines = {}, {}
 for drv, tel in telemetry_data.items():
     team = laps.pick_driver(drv)["Team"].iloc[0]
     color = TEAM_COLORS.get(team, "#888888")
-
-    points[drv], = ax1.plot([], [], "o", color=color, markersize=9, )
+    points[drv], = ax1.plot([], [], "o", color=color, markersize=10, markeredgecolor='white', markeredgewidth=1.5, zorder=10)
     lines[drv], = ax1.plot([], [], color=color, lw=2, alpha=0.7)
 
-ax1.set_xlim(all_tel["X"].min() - 20, all_tel["X"].max() + 20)
-ax1.set_ylim(all_tel["Y"].min() - 20, all_tel["Y"].max() + 20)
-ax1.legend()
+ax1.set_xlim(track_tel["X"].min() - 20, track_tel["X"].max() + 20)
+ax1.set_ylim(track_tel["Y"].min() - 20, track_tel["Y"].max() + 20)
+ax1.axis('off')
 
-#time setup
-t_start = 0.0
-t_end = max(t["t"].iloc[-1] for t in telemetry_data.values())
-frames = int((t_end - t_start) * FPS)
+# Lap counter - repositioned
+lap_text = ax1.text(0.02, 0.98, "Lap 1", transform=ax1.transAxes, fontsize=16, 
+                    fontweight='bold', bbox=dict(facecolor='white', alpha=0.9, 
+                    edgecolor='black', linewidth=2, boxstyle='round,pad=0.5'))
 
+# IMPROVED LEADERBOARD
+leaderboard_ax = fig1.add_axes([0.76, 0.25, 0.23, 0.65])
+leaderboard_ax.set_xlim(0, 1)
+leaderboard_ax.set_ylim(0, 1)
+leaderboard_ax.axis("off")
 
+# Play/Pause & sliders
 is_paused = False
 manual_scrub = False
 
@@ -201,51 +172,113 @@ play_ax = fig1.add_axes([0.1, 0.1, 0.15, 0.06])
 play_button = Button(play_ax, "Pause")
 play_button.on_clicked(toggle_play)
 
-slider_ax = fig1.add_axes([0.35, 0.12, 0.4, 0.03])
-time_slider = Slider(
-    slider_ax,
-    "Time",
-    t_start,
-    t_end,
-    valinit=t_start
-)
+time_slider_ax = fig1.add_axes([0.35, 0.12, 0.35, 0.03])
+time_slider = Slider(time_slider_ax, "Time", 0.0, max(t["t"].iloc[-1] for t in telemetry_data.values()), valinit=0.0)
 
-#Speed multiplier slider
-speed_ax = fig1.add_axes([0.35, 0.06, 0.4, 0.03])
-speed_slider = Slider(
-    speed_ax,
-    "Speed",
-    0.25,
-    3.0,
-    valinit=1.0
-)
-
+speed_slider_ax = fig1.add_axes([0.35, 0.06, 0.35, 0.03])
+speed_slider = Slider(speed_slider_ax, "Speed", 0.25, 3.0, valinit=1.0)
 
 def on_scrub(val):
     global manual_scrub
     manual_scrub = True
-    update(int((val - t_start) * FPS))
+    update(int((val - 0) * FPS))
     fig1.canvas.draw_idle()
 
 time_slider.on_changed(on_scrub)
 
-leaderboard_ax1 = fig1.add_axes([0.78, 0.25, 0.18, 0.55])
-leaderboard_ax1.axis("off")
+# IMPROVED LEADERBOARD UPDATE FUNCTION
+def update_leaderboard(current_t):
+    snapshots = []
+    for drv, tel in telemetry_data.items():
+        idx = min(tel["t"].searchsorted(current_t), len(tel)-1)
+        laps_done = sum(current_t >= t for t in tel.attrs["lap_starts"])
+        race_time = tel["race_time"].iloc[idx]
+        dist = tel["dist"].iloc[idx]
+        finished = current_t > tel["t"].iloc[-1]
+        snapshots.append((drv, laps_done, race_time, dist, finished))
 
-# Lap counter text (top-left corner)
-lap_text = ax1.text(
-    0.02, 0.95, "Lap 1",  # position in axes coordinates
-    transform=ax1.transAxes,
-    fontsize=14,
-    fontweight='bold',
-    bbox=dict(facecolor='white', alpha=0.7)
-)
+    # Sort: most laps first, then by distance covered
+    snapshots.sort(key=lambda x: (-x[1], -x[3]))
 
+    leader_laps, leader_dist = snapshots[0][1], snapshots[0][3]
 
+    leaderboard_ax.clear()
+    leaderboard_ax.set_xlim(0, 1)
+    leaderboard_ax.set_ylim(0, 1)
+    leaderboard_ax.axis("off")
+    
+    # Title with background
+    title_bg = plt.Rectangle((0, 0.94), 1, 0.06, facecolor='black', 
+                              edgecolor='white', linewidth=2, transform=leaderboard_ax.transAxes)
+    leaderboard_ax.add_patch(title_bg)
+    leaderboard_ax.text(0.5, 0.97, "LEADERBOARD", fontsize=13, fontweight="bold", 
+                        color='white', ha='center', va='center', transform=leaderboard_ax.transAxes)
+    
+    num_drivers = len(snapshots)
+    line_height = 0.85 / max(num_drivers, 1)
+    
+    for i, (drv, laps_done, race_time, dist, finished) in enumerate(snapshots):
+        team = laps.pick_driver(drv)["Team"].iloc[0]
+        color = TEAM_COLORS.get(team, "#888888")
+        
+        y_pos = 0.90 - (i * line_height)
+        
+        # Calculate gap
+        if i == 0:
+            gap_str = "LEADER"
+            gap_color = 'gold'
+        elif laps_done < leader_laps:
+            laps_down = leader_laps - laps_done
+            gap_str = f"+{laps_down}L" if laps_down == 1 else f"+{laps_down}L"
+            gap_color = 'red'
+        else:
+            # Use distance-based gap for more accuracy
+            gap_dist = leader_dist - dist
+            # Approximate: 1 second ≈ 80 meters (adjust based on track)
+            gap_seconds = gap_dist / 80.0
+            gap_str = f"+{gap_seconds:.1f}s"
+            gap_color = 'white'
+        
+        if finished and i != 0:
+            gap_str = "DNF"
+            gap_color = 'gray'
+        
+        # Background box for each position
+        if i == 0:
+            bg_color = 'gold'
+            bg_alpha = 0.3
+        elif i < 3:
+            bg_color = 'silver'
+            bg_alpha = 0.2
+        else:
+            bg_color = 'lightgray'
+            bg_alpha = 0.1
+        
+        pos_box = plt.Rectangle((0.02, y_pos - line_height*0.4), 0.96, line_height*0.8, 
+                                facecolor=bg_color, alpha=bg_alpha, 
+                                edgecolor=color, linewidth=2,
+                                transform=leaderboard_ax.transAxes)
+        leaderboard_ax.add_patch(pos_box)
+        
+        # Position number
+        leaderboard_ax.text(0.08, y_pos, f"{i+1}", fontsize=12, fontweight='bold', 
+                           ha='center', va='center', transform=leaderboard_ax.transAxes,
+                           bbox=dict(boxstyle='circle', facecolor=color, edgecolor='white', linewidth=1.5))
+        
+        # Driver code
+        leaderboard_ax.text(0.25, y_pos, drv, fontsize=11, fontweight='bold', 
+                           color=color, ha='left', va='center', transform=leaderboard_ax.transAxes)
+        
+        # Gap
+        leaderboard_ax.text(0.90, y_pos, gap_str, fontsize=10, fontweight='bold',
+                           color=gap_color, ha='right', va='center', 
+                           transform=leaderboard_ax.transAxes,
+                           bbox=dict(facecolor='black', alpha=0.7, 
+                                   edgecolor=gap_color, linewidth=1, pad=2))
 
+# Animation update
 def update(frame):
     global manual_scrub
-
     if manual_scrub:
         current_t = time_slider.val
         manual_scrub = False
@@ -253,121 +286,68 @@ def update(frame):
         current_t = frame / FPS * speed_slider.val
         time_slider.set_val(current_t)
 
-    snapshots = []
-
-    # Collect positions and distances
     for drv, tel in telemetry_data.items():
-        idx = min(tel["t"].searchsorted(current_t), len(tel) - 1)
+        idx = min(tel["t"].searchsorted(current_t), len(tel)-1)
         x, y = tel.loc[idx, ["X", "Y"]]
         points[drv].set_data([x], [y])
-
         if SHOW_TRAILS:
             lines[drv].set_data(tel["X"][:idx], tel["Y"][:idx])
 
-        snapshots.append((drv, idx, tel["dist"].iloc[idx], tel))
+    update_leaderboard(current_t)
 
-    # Sort by distance (leader first)
-    snapshots.sort(key=lambda x: x[2], reverse=True)
-    leader_dist = snapshots[0][2]
-
-    # Clear and redraw leaderboard
-    leaderboard_ax1.clear()
-    leaderboard_ax1.axis("off")
-    leaderboard_ax1.text(
-        0.0, 1.0, "Leaderboard",
-        fontsize=14,
-        fontweight="bold",
-        transform=leaderboard_ax1.transAxes
-    )
-
-    line_height = 0.06
-    for i, (drv, idx, dist, tel) in enumerate(snapshots):
-        team = laps.pick_driver(drv)["Team"].iloc[0]
-        color = TEAM_COLORS.get(team, "#888888")
-         # Determine if driver has finished
-    finished = current_t <= tel["t"].iloc[-1]
-    
-    if i == 0:
-        gap_str = "LEADER"
-    else:
-        if finished:
-            gap = (leader_dist - dist) / 80.0
-            gap_str = f"+{gap:.1f}s"
-        else:
-            gap_str = "DNF"  # Only show DNF if their telemetry is over
-        leaderboard_ax1.text(
-            0.0,
-            1.0 - (i + 1) * line_height,
-            f"{i+1}. {drv} {gap_str}",
-            color=color,
-            fontsize=11,
-            transform=leaderboard_ax1.transAxes
-        )
-
-    # Lap counter (top-left)
-    current_lap = max(
-        sum(current_t >= t for t in tel.attrs["lap_starts"])
-        for tel in telemetry_data.values()
-    )
+    current_lap = max(sum(current_t >= t for t in tel.attrs["lap_starts"]) for tel in telemetry_data.values())
     lap_text.set_text(f"Lap {current_lap}")
 
     return list(points.values()) + list(lines.values())
 
-
-ani = FuncAnimation(
-    fig1,
-    update,
-    frames=frames,
-    interval=1000 / FPS,
-    blit=False 
-)
-
-
-ax1.legend()
+# Run animation
+frames = int(max(t["t"].iloc[-1] for t in telemetry_data.values()) * FPS)
+ani = FuncAnimation(fig1, update, frames=frames, interval=1000/FPS, blit=False)
 plt.show()
-if drivers_input != "ALL":
 
-    fig2,ax2 = plt.subplots(figsize=(12, 6))#new figure for lap/sector plot
+# LAP/SECTOR COMPARISON PLOT
+if drivers_input != "ALL":
+    fig2, ax2 = plt.subplots(figsize=(12, 6))
     team_driver_count = {}
 
     for driver in drivers:
         driver_laps = laps[laps['Driver'] == driver].dropna(
             subset=['LapTime', 'Sector1Time', 'Sector2Time', 'Sector3Time']
-    )
+        )
 
-    lap_numbers = driver_laps['LapNumber']
-    driver_team = driver_laps['Team'].iloc[0]
-    color = TEAM_COLORS.get(driver_team, '#888888')
+        lap_numbers = driver_laps['LapNumber']
+        driver_team = driver_laps['Team'].iloc[0]
+        color = TEAM_COLORS.get(driver_team, '#888888')
 
-    count = team_driver_count.get(driver_team, 0)
-    linestyle = LINE_STYLES[count % len(LINE_STYLES)]
-    team_driver_count[driver_team] = count + 1
+        count = team_driver_count.get(driver_team, 0)
+        linestyle = LINE_STYLES[count % len(LINE_STYLES)]
+        team_driver_count[driver_team] = count + 1
 
-    if mode == "LAP":
-        lap_times = driver_laps['LapTime'].dt.total_seconds()
-        ax2.plot(lap_numbers, lap_times, linestyle=linestyle, color=color, marker='o',
-                 label=f"{driver} Lap Time")
+        if mode == "LAP":
+            lap_times = driver_laps['LapTime'].dt.total_seconds()
+            ax2.plot(lap_numbers, lap_times, linestyle=linestyle, color=color, marker='o',
+                     label=f"{driver} Lap Time")
 
-        fastest_idx = lap_times.idxmin()
-        ax2.scatter(lap_numbers.loc[fastest_idx], lap_times.loc[fastest_idx],
-                    s=140, edgecolors='black', color=color, zorder=5)
+            fastest_idx = lap_times.idxmin()
+            ax2.scatter(lap_numbers.loc[fastest_idx], lap_times.loc[fastest_idx],
+                        s=140, edgecolors='black', color=color, zorder=5)
 
-    else:  # SECTOR MODE
-        for i in range(3):
-            sector_times = driver_laps[f'Sector{i+1}Time'].dt.total_seconds()
-            ax2.plot(
-                lap_numbers,
-                sector_times,
-                marker=SECTOR_MARKERS[i],
-                linestyle=linestyle,
-                color=color,
-                label=f"{driver} Sector {i+1}"
-            )
+        else:  # SECTOR MODE
+            for i in range(3):
+                sector_times = driver_laps[f'Sector{i+1}Time'].dt.total_seconds()
+                ax2.plot(
+                    lap_numbers,
+                    sector_times,
+                    marker=SECTOR_MARKERS[i],
+                    linestyle=linestyle,
+                    color=color,
+                    label=f"{driver} Sector {i+1}"
+                )
 
-    # Pit stops
-    pit_laps = driver_laps[driver_laps['PitInTime'].notna()]['LapNumber']
-    for pit in pit_laps:
-        ax2.axvline(pit, color=color, linestyle=':', alpha=0.4)
+        # Pit stops
+        pit_laps = driver_laps[driver_laps['PitInTime'].notna()]['LapNumber']
+        for pit in pit_laps:
+            ax2.axvline(pit, color=color, linestyle=':', alpha=0.4)
 
     ax2.set_xlabel("Lap Number")
     ax2.set_ylabel("Time (s)")
@@ -375,3 +355,8 @@ if drivers_input != "ALL":
     ax2.grid(True, alpha=0.3)
     ax2.legend()
     plt.show()
+
+
+
+
+

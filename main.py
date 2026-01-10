@@ -77,8 +77,10 @@ if REPLAY_MODE not in {"FASTEST", "RACE"}:
     print("Invalid replay mode")
     exit()
 
-# Collect telemetry for all drivers
+    # Collect telemetry for all drivers
 telemetry_data = {}
+driver_status = {}  # Track DNF status
+
 for drv in drivers:
     drv_laps = laps.pick_driver(drv)
     tel_list = []
@@ -119,6 +121,9 @@ for drv in drivers:
             lap_starts.append(tel["t"].iloc[i])
     tel.attrs["lap_starts"] = lap_starts
     telemetry_data[drv] = tel
+    
+    # Initialize driver status
+    driver_status[drv] = {"active": True, "dnf_time": None, "dnf_lap": None, "dnf_position": None}
 
 fig1, ax1 = plt.subplots(figsize=(10, 8))
 ax1.set_title("F1 Lap Replay", fontsize=16, fontweight='bold', pad=20)
@@ -194,13 +199,36 @@ def update_leaderboard(current_t):
         laps_done = sum(current_t >= t for t in tel.attrs["lap_starts"])
         race_time = tel["race_time"].iloc[idx]
         dist = tel["dist"].iloc[idx]
-        finished = current_t > tel["t"].iloc[-1]
-        snapshots.append((drv, laps_done, race_time, dist, finished))
+        
+        # Check if driver has finished their data
+        has_finished = current_t > tel["t"].iloc[-1]
+        
+        # Determine if this is a DNF (finished early and not leading)
+        if has_finished and not driver_status[drv]["dnf_time"]:
+            # Mark as DNF if they finished before the expected end
+            max_t = max(t["t"].iloc[-1] for t in telemetry_data.values())
+            if tel["t"].iloc[-1] < max_t * 0.95:  # Finished more than 5% early
+                driver_status[drv]["dnf_time"] = tel["t"].iloc[-1]
+                driver_status[drv]["dnf_lap"] = laps_done
+        
+        # If DNF, freeze their position at DNF time
+        if driver_status[drv]["dnf_time"]:
+            idx = len(tel) - 1  # Use last known position
+            dist = tel["dist"].iloc[-1]
+            laps_done = driver_status[drv]["dnf_lap"]
+        
+        snapshots.append((drv, laps_done, race_time, dist, has_finished, tel, idx))
 
     # Sort: most laps first, then by distance covered
     snapshots.sort(key=lambda x: (-x[1], -x[3]))
 
     leader_laps, leader_dist = snapshots[0][1], snapshots[0][3]
+    leader_tel, leader_idx = snapshots[0][5], snapshots[0][6]
+    
+    # Store positions for DNF tracking
+    for i, (drv, _, _, _, _, _, _) in enumerate(snapshots):
+        if driver_status[drv]["dnf_time"] and not driver_status[drv]["dnf_position"]:
+            driver_status[drv]["dnf_position"] = i + 1
 
     leaderboard_ax.clear()
     leaderboard_ax.set_xlim(0, 1)
@@ -217,34 +245,69 @@ def update_leaderboard(current_t):
     num_drivers = len(snapshots)
     line_height = 0.85 / max(num_drivers, 1)
     
-    for i, (drv, laps_done, race_time, dist, finished) in enumerate(snapshots):
+    for i, (drv, laps_done, race_time, dist, has_finished, tel, idx) in enumerate(snapshots):
         team = laps.pick_driver(drv)["Team"].iloc[0]
         color = TEAM_COLORS.get(team, "#888888")
         
         y_pos = 0.90 - (i * line_height)
         
-        # Calculate gap
+        # Check if driver is DNF
+        is_dnf = driver_status[drv]["dnf_time"] is not None
+        
+        # IMPROVED GAP CALCULATION
         if i == 0:
             gap_str = "LEADER"
             gap_color = 'gold'
+        elif is_dnf:
+            # Show DNF status with lap number
+            dnf_lap = driver_status[drv]["dnf_lap"]
+            gap_str = f"DNF (L{dnf_lap})"
+            gap_color = 'red'
+            color = f"{color}80"  # Make team color semi-transparent for DNF
         elif laps_done < leader_laps:
             laps_down = leader_laps - laps_done
             gap_str = f"+{laps_down}L" if laps_down == 1 else f"+{laps_down}L"
             gap_color = 'red'
         else:
-            # Use distance-based gap for more accuracy
-            gap_dist = leader_dist - dist
-            # Approximate: 1 second ≈ 80 meters (adjust based on track)
-            gap_seconds = gap_dist / 80.0
-            gap_str = f"+{gap_seconds:.1f}s"
-            gap_color = 'white'
-        
-        if finished and i != 0:
-            gap_str = "DNF"
-            gap_color = 'gray'
+            # Same lap - calculate time gap by finding where leader was at this driver's distance
+            current_dist = dist
+            
+            # Find the point in leader's telemetry where they were at the same distance
+            leader_dist_array = leader_tel["dist"].values
+            leader_time_array = leader_tel["race_time"].values
+            
+            # Find closest distance match in leader's data
+            if current_dist <= leader_dist_array[-1]:
+                # Driver is behind - find when leader was at this distance
+                leader_at_dist_idx = leader_tel["dist"].searchsorted(current_dist)
+                leader_at_dist_idx = min(leader_at_dist_idx, len(leader_tel) - 1)
+                leader_time_at_dist = leader_time_array[leader_at_dist_idx]
+                
+                # Gap is the difference in time when both were at the same point
+                gap_seconds = race_time - leader_time_at_dist
+            else:
+                # Driver is ahead of where leader currently is (shouldn't happen if sorted correctly)
+                gap_seconds = race_time - leader_time_array[leader_idx]
+            
+            # Format gap nicely
+            if gap_seconds < 0.05:
+                gap_str = "±0.0s"
+                gap_color = 'lime'
+            elif gap_seconds < 1.0:
+                gap_str = f"+{gap_seconds:.2f}s"
+                gap_color = 'lime'
+            elif gap_seconds < 10.0:
+                gap_str = f"+{gap_seconds:.1f}s"
+                gap_color = 'white'
+            else:
+                gap_str = f"+{gap_seconds:.1f}s"
+                gap_color = 'orange'
         
         # Background box for each position
-        if i == 0:
+        if is_dnf:
+            bg_color = 'darkred'
+            bg_alpha = 0.3
+        elif i == 0:
             bg_color = 'gold'
             bg_alpha = 0.3
         elif i < 3:
@@ -256,25 +319,40 @@ def update_leaderboard(current_t):
         
         pos_box = plt.Rectangle((0.02, y_pos - line_height*0.4), 0.96, line_height*0.8, 
                                 facecolor=bg_color, alpha=bg_alpha, 
-                                edgecolor=color, linewidth=2,
+                                edgecolor=color if not is_dnf else 'darkred', linewidth=2,
                                 transform=leaderboard_ax.transAxes)
         leaderboard_ax.add_patch(pos_box)
         
         # Position number
+        pos_bg_color = 'darkred' if is_dnf else color
         leaderboard_ax.text(0.08, y_pos, f"{i+1}", fontsize=12, fontweight='bold', 
                            ha='center', va='center', transform=leaderboard_ax.transAxes,
-                           bbox=dict(boxstyle='circle', facecolor=color, edgecolor='white', linewidth=1.5))
+                           bbox=dict(boxstyle='circle', facecolor=pos_bg_color, 
+                                   edgecolor='white', linewidth=1.5, alpha=0.7 if is_dnf else 1.0))
         
-        # Driver code
+        # Driver code - with strikethrough if DNF
+        if is_dnf:
+            # Draw strikethrough line
+            leaderboard_ax.plot([0.18, 0.32], [y_pos, y_pos], color='red', 
+                               linewidth=2, transform=leaderboard_ax.transAxes, zorder=10)
+        
         leaderboard_ax.text(0.25, y_pos, drv, fontsize=11, fontweight='bold', 
-                           color=color, ha='left', va='center', transform=leaderboard_ax.transAxes)
+                           color=color, ha='left', va='center', transform=leaderboard_ax.transAxes,
+                           alpha=0.5 if is_dnf else 1.0)
         
-        # Gap
-        leaderboard_ax.text(0.90, y_pos, gap_str, fontsize=10, fontweight='bold',
-                           color=gap_color, ha='right', va='center', 
-                           transform=leaderboard_ax.transAxes,
-                           bbox=dict(facecolor='black', alpha=0.7, 
-                                   edgecolor=gap_color, linewidth=1, pad=2))
+        # Gap - with special styling for DNF
+        if is_dnf:
+            leaderboard_ax.text(0.90, y_pos, gap_str, fontsize=9, fontweight='bold',
+                               color='white', ha='right', va='center', 
+                               transform=leaderboard_ax.transAxes,
+                               bbox=dict(facecolor='darkred', alpha=0.9, 
+                                       edgecolor='red', linewidth=1.5, pad=2))
+        else:
+            leaderboard_ax.text(0.90, y_pos, gap_str, fontsize=10, fontweight='bold',
+                               color=gap_color, ha='right', va='center', 
+                               transform=leaderboard_ax.transAxes,
+                               bbox=dict(facecolor='black', alpha=0.7, 
+                                       edgecolor=gap_color, linewidth=1, pad=2))
 
 # Animation update
 def update(frame):
@@ -289,14 +367,29 @@ def update(frame):
     for drv, tel in telemetry_data.items():
         idx = min(tel["t"].searchsorted(current_t), len(tel)-1)
         x, y = tel.loc[idx, ["X", "Y"]]
+        
+        # Fade out DNF drivers on track
+        is_dnf = driver_status[drv]["dnf_time"] is not None
+        alpha = 0.3 if is_dnf else 1.0
+        
         points[drv].set_data([x], [y])
+        points[drv].set_alpha(alpha)
+        
         if SHOW_TRAILS:
             lines[drv].set_data(tel["X"][:idx], tel["Y"][:idx])
+            lines[drv].set_alpha(alpha)
 
     update_leaderboard(current_t)
 
-    current_lap = max(sum(current_t >= t for t in tel.attrs["lap_starts"]) for tel in telemetry_data.values())
-    lap_text.set_text(f"Lap {current_lap}")
+    # Update lap counter based on the leader's current lap
+    if telemetry_data:
+        leader_laps = []
+        for drv, tel in telemetry_data.items():
+            current_lap = sum(current_t >= t for t in tel.attrs["lap_starts"])
+            leader_laps.append(current_lap)
+        
+        current_lap = max(leader_laps) if leader_laps else 1
+        lap_text.set_text(f"Lap {current_lap}")
 
     return list(points.values()) + list(lines.values())
 
@@ -355,8 +448,3 @@ if drivers_input != "ALL":
     ax2.grid(True, alpha=0.3)
     ax2.legend()
     plt.show()
-
-
-
-
-
